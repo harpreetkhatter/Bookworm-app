@@ -16,10 +16,10 @@ import { Ionicons } from "@expo/vector-icons";
 import COLORS from "../../constants/colors";
 import * as ImagePicker from "expo-image-picker";
 import { Image } from "react-native";
-import * as FileSystem from "expo-file-system";
-import {useAuthStore} from "../../store/authStore"
-import {API_URL} from "../../constants/api";
-
+import { readAsStringAsync } from "expo-file-system/legacy";
+import * as ImageManipulator from "expo-image-manipulator";
+import { useAuthStore } from "../../store/authStore";
+import { API_URL } from "../../constants/api";
 
 const Create = () => {
   const [title, setTitle] = useState("");
@@ -30,7 +30,7 @@ const Create = () => {
   const [loading, setLoading] = useState(false);
 
   const router = useRouter();
-  const {token}=useAuthStore();
+  const { token } = useAuthStore();
 
   const pickImage = async () => {
     try {
@@ -40,7 +40,8 @@ const Create = () => {
           await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (status !== "granted") {
           Alert.alert(
-            "Permission denied! Please allow access to your media library.",
+            "Permission denied",
+            "Please allow access to your media library.",
           );
           return;
         }
@@ -48,65 +49,90 @@ const Create = () => {
 
       //launch the image library
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: "images",
         allowsEditing: true,
         aspect: [4, 3],
-        quality: 0.5, // lower the quality for smaller base64
-        base64: true,
+        quality: 0.5,
       });
 
-      if (!result.canceled) {
-        const asset = result.assets[0];
+      console.log("Image picker result:", result);
 
-        setImage(asset.uri);
-        //if base64 is provided by the library,use it
-        if (asset.base64) {
-          setImageBase64(asset.base64);
-        } else {
-          //fallback to manual conversion if base64 is not provided
-          const base64 = await FileSystem.readAsStringAsync(asset.uri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          setImageBase64(base64);
-        }
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        console.log("Selected image URI:", asset.uri);
+
+        // Compress and resize the image aggressively
+        const manipulatedImage = await ImageManipulator.manipulateAsync(
+          asset.uri,
+          [{ resize: { width: 600 } }], // Smaller size for base64 transmission
+          { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG }
+        );
+
+        console.log("Manipulated image URI:", manipulatedImage.uri);
+        setImage(manipulatedImage.uri);
+
+        // Convert compressed image to base64
+        const base64 = await readAsStringAsync(manipulatedImage.uri, {
+          encoding: "base64",
+        });
+
+        console.log("Base64 length:", base64.length);
+        setImageBase64(base64);
+        Alert.alert("Success", "Image selected successfully!");
       }
     } catch (error) {
       console.error("pickImage error:", error);
-      Alert.alert("Error", "Failed to pick image. Please try again.");
+      Alert.alert("Error", `Failed to pick image: ${error.message}`);
     }
   };
   const handleSubmit = async () => {
-    if(!title || !caption || !imageBase64 || !rating){
-      Alert.alert("Error","Please fill in all fields")
+    if (!title || !caption || !imageBase64 || !rating) {
+      Alert.alert("Error", "Please fill in all fields");
       return;
     }
 
     try {
       setLoading(true);
-      //get file extension from uri or default to jpeg
-      const uriParts=image.split(".")
-      const fileType=uriParts[uriParts.length-1];
-      const imageType=fileType ? `image/${fileType.toLowerCase()}`:'image/jpeg';
-      const imageDataUrl=`data${imageType};base64,${imageBase64}`
 
-      const response=await fetch(`${API_URL}/api/books`,{
-        method:"POST",
-        headers:{
-          "Content-Type":"application/json",
-          "Authorization":`Bearer ${token}`
+      // Format as JPEG data URI (since we compressed to JPEG)
+      const imageDataUrl = `data:image/jpeg;base64,${imageBase64}`;
+
+      const response = await fetch(`${API_URL}/api/books`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
         },
-        body:JSON.stringify({
+        body: JSON.stringify({
           title,
           caption,
-          image:imageDataUrl,
-          rating:rating.toString()
-        })
+          image: imageDataUrl,
+          rating: rating.toString(),
+        }),
       });
-      const data=await response.json();
-      if(!response.ok){
+
+      const rawText = await response.text();
+      let data;
+
+      if (response.status === 413) {
+        throw new Error(
+          "Image is still too large. Please try a different image.",
+        );
+      }
+
+      try {
+        data = JSON.parse(rawText);
+      } catch (parseErr) {
+        throw new Error(
+          `Server returned invalid JSON (${response.status}): ${rawText}`,
+        );
+      }
+
+      if (!response.ok) {
         throw new Error(data.message || "Failed to submit recommendation");
       }
-      Alert.alert("Success","Recommendation submitted successfully");
+
+      Alert.alert("Success", "Recommendation submitted successfully");
       setTitle("");
       setCaption("");
       setImage(null);
@@ -114,12 +140,12 @@ const Create = () => {
       setRating(3);
       router.push("/");
     } catch (error) {
-      console.error("handleSubmit error:",error);
-      Alert.alert("Error",error.message || "Failed to submit recommendation");
-      
+      console.error("handleSubmit error:", error);
+      Alert.alert("Error", error.message || "Failed to submit recommendation");
+    } finally {
+      setLoading(false);
     }
-
-  };
+  }
 
   const renderRatingPicker = () => {
     const stars = [];

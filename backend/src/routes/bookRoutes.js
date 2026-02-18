@@ -14,9 +14,15 @@ router.post("/", protectRoute, async (req, res) => {
     if (!title || !caption || !rating || !image) {
       return res.status(400).json({ message: "All fields are required" });
     }
-    //upload the image
-    //save to db
-    const uploadResponse = await cloudinary.uploader.upload(image);
+    //upload the image with optimization
+    const uploadResponse = await cloudinary.uploader.upload(image, {
+      folder: "bookworm",
+      transformation: [
+        { width: 1000, crop: "limit" }, // Limit max width to 1000px
+        { quality: "auto:good" }, // Auto quality optimization
+        { fetch_format: "auto" } // Auto format selection (WebP when supported)
+      ]
+    });
     const imageUrl = uploadResponse.secure_url;
 
     const newBook = new Book({
@@ -41,8 +47,8 @@ router.get("/", protectRoute, async (req, res) => {
     const limit = req.query.limit || 5;
     const skip = (page - 1) * limit;
 
-    const books = (await Book.find())
-      .toSorted({ createdAt: -1 })
+    const books = await Book.find()
+      .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .populate("user", "username profileImage");
@@ -60,7 +66,7 @@ router.get("/", protectRoute, async (req, res) => {
 });
 router.get("/user", protectRoute, async (req, res) => {
   try {
-    const books = (await Book.find({ user: req.user._id })).toSorted({ createdAt: -1 });
+    const books = await Book.find({ user: req.user._id }).sort({ createdAt: -1 });
     res.status(200).json(books);
   } catch (error) {
     console.log("Error in getting user books", error);
